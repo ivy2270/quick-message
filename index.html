@@ -1,0 +1,211 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>診所通訊系統 v2.1</title>
+    <style>
+        body { font-family: "Microsoft JhengHei", sans-serif; background: #f4f7f6; margin: 0; padding: 0; }
+        #app { width: 100vw; height: 100vh; display: flex; flex-direction: column; background: white; }
+        
+        header { background: #343a40; color: white; padding: 10px; font-size: 15px; font-weight: bold; text-align: center; transition: background 0.3s; }
+        
+        #msg-list { flex: 1; overflow-y: auto; padding: 10px; list-style: none; margin: 0; background: #f8f9fa; }
+        
+        .msg-item { 
+            background: white; padding: 10px; border-radius: 6px; margin-bottom: 8px; 
+            box-shadow: 0 1px 3px rgba(0,0,0,0.1); border-left: 6px solid #ccc;
+            position: relative; animation: fadeIn 0.3s;
+        }
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(5px); } to { opacity: 1; transform: translateY(0); } }
+
+        .msg-item.read { opacity: 0.5; text-decoration: line-through; background: #fdfdfd; }
+        
+        .info-row { display: flex; justify-content: space-between; font-size: 11px; color: #888; margin-bottom: 4px; }
+        .msg-content { font-size: 16px; display: flex; align-items: flex-start; }
+        
+        .read-list { font-size: 10px; color: #007bff; margin-top: 4px; font-weight: bold; }
+        
+        input[type="checkbox"] { transform: scale(1.4); margin-right: 10px; cursor: pointer; }
+        .del-btn { color: #ff4d4d; cursor: pointer; font-size: 18px; margin-left: 10px; border: none; background: none; line-height: 1; }
+
+        .input-area { padding: 12px; background: #fff; border-top: 1px solid #ddd; }
+        #msgInput { width: 100%; box-sizing: border-box; padding: 10px; border: 2px solid #ddd; border-radius: 6px; font-size: 16px; }
+        #msgInput:focus { border-color: #007bff; outline: none; }
+        .hint { font-size: 11px; color: #999; margin-top: 5px; }
+    </style>
+</head>
+<body>
+
+<div id="app">
+    <header id="header-title">系統加載中...</header>
+    <ul id="msg-list"></ul>
+    <div class="input-area">
+        <input type="text" id="msgInput" placeholder="輸入訊息..." onkeypress="handleKeyPress(event)">
+        <div id="hint-text" class="hint">按 Enter 送出</div>
+    </div>
+</div>
+
+<script type="module">
+  import { initializeApp } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-app.js";
+  import { getDatabase, ref, push, onValue, update, remove } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-database.js";
+
+  // --- Firebase 設定 ---
+  const firebaseConfig = {
+    apiKey: "AIzaSyDQB73fFcCL2bZuv8HM7oZTa14hkxl8NKc",
+    databaseURL: "https://quick-message-6f4b3-default-rtdb.firebaseio.com",
+    projectId: "quick-message-6f4b3",
+    appId: "1:679075308164:web:beae2a7a606ece6ffd58d1"
+  };
+
+  const app = initializeApp(firebaseConfig);
+  const db = getDatabase(app);
+  const msgRef = ref(db, 'all_messages');
+
+  let settings = null;
+  const urlParams = new URLSearchParams(window.location.search);
+  const myRoom = urlParams.get('room'); // admin, 1, 2, 3, 4, 5
+
+  // 1. 載入外部設定檔
+  async function loadSettings() {
+    try {
+      const response = await fetch('settings.json');
+      settings = await response.json();
+      startApp();
+    } catch (e) {
+      document.getElementById('header-title').innerText = "無法載入 settings.json";
+    }
+  }
+
+  function startApp() {
+    const roomInfo = myRoom === 'admin' ? settings.admin : settings.rooms[myRoom];
+    if (!roomInfo) {
+      document.getElementById('header-title').innerText = "網址參數錯誤 (例如 ?room=1)";
+      return;
+    }
+
+    document.getElementById('header-title').innerText = `當前位置：${roomInfo.name}`;
+    document.getElementById('header-title').style.background = roomInfo.color;
+    
+    if(myRoom === 'admin') {
+      document.getElementById('hint-text').innerText = "櫃台模式：輸入「1 內容」發給一診，輸入「0 內容」發給全體";
+    }
+
+    listenToMessages();
+  }
+
+  // 2. 監聽訊息
+  function listenToMessages() {
+    onValue(msgRef, (snapshot) => {
+      const data = snapshot.val();
+      const list = document.getElementById('msg-list');
+      list.innerHTML = "";
+      if (!data) return;
+
+      for (let id in data) {
+        const item = data[id];
+        
+        // 過濾邏輯
+        const isToMe = item.targetRoom === myRoom;
+        const isToAll = item.targetRoom === '0';
+        const isFromMe = item.senderRoom === myRoom;
+        if (myRoom !== 'admin' && !isToMe && !isToAll && !isFromMe) continue;
+
+        // 判斷已讀：如果是全體訊息，檢查 readStatus 裡有沒有我的診間
+        let isRead = false;
+        if (item.targetRoom === '0') {
+            isRead = item.readStatus && item.readStatus[myRoom];
+        } else {
+            isRead = item.isRead;
+        }
+
+        const senderInfo = item.senderRoom === 'admin' ? settings.admin : settings.rooms[item.senderRoom];
+        const targetName = item.targetRoom === '0' ? "全體" : (item.targetRoom === 'admin' ? "櫃台" : settings.rooms[item.targetRoom].name);
+
+        const li = document.createElement('li');
+        li.className = `msg-item ${isRead ? 'read' : ''}`;
+        li.style.borderLeftColor = senderInfo.color;
+        
+        // 櫃台顯示全體訊息的已讀進度
+        let readStatusHtml = "";
+        if (myRoom === 'admin' && item.targetRoom === '0' && item.readStatus) {
+            const readNames = Object.keys(item.readStatus)
+                .filter(r => item.readStatus[r] === true)
+                .map(r => settings.rooms[r].name);
+            if(readNames.length > 0) readStatusHtml = `<div class="read-list">已讀: ${readNames.join(', ')}</div>`;
+        }
+
+        li.innerHTML = `
+          <div class="info-row">
+              <span>${senderInfo.name} ➔ ${targetName}</span>
+              <span>${new Date(item.time).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}</span>
+          </div>
+          <div class="msg-content">
+              <input type="checkbox" ${isRead ? 'checked' : ''} onchange="toggleRead('${id}', '${item.targetRoom}', this.checked)">
+              <span style="flex:1">${item.content}</span>
+              ${readStatusHtml}
+              ${myRoom === 'admin' ? `<button class="del-btn" onclick="deleteMsg('${id}')">×</button>` : ''}
+          </div>
+        `;
+        list.appendChild(li);
+      }
+      list.scrollTop = list.scrollHeight;
+    });
+  }
+
+  // 3. 處理已讀切換
+  window.toggleRead = (id, targetRoom, status) => {
+    if (targetRoom === '0') {
+        // 更新全體訊息中「特定診間」的狀態
+        const updateData = {};
+        updateData[`all_messages/${id}/readStatus/${myRoom}`] = status;
+        update(ref(db), updateData);
+    } else {
+        update(ref(db, `all_messages/${id}`), { isRead: status });
+    }
+  };
+
+  // 4. 發送訊息邏輯
+  window.handleKeyPress = function(e) {
+    if (e.key === 'Enter') {
+      const input = document.getElementById('msgInput');
+      let text = input.value.trim();
+      if (!text) return;
+
+      let target = (myRoom === 'admin') ? "0" : "admin";
+      
+      if (myRoom === 'admin') {
+          const match = text.match(/^([0-5])\s+(.*)/);
+          if (match) {
+              target = match[1];
+              text = match[2];
+          }
+      }
+
+      const payload = {
+        senderRoom: myRoom,
+        targetRoom: target,
+        content: text,
+        time: Date.now()
+      };
+
+      // 初始化已讀結構
+      if (target === '0') {
+          payload.readStatus = { "1": false, "2": false, "3": false, "4": false, "5": false };
+      } else {
+          payload.isRead = false;
+      }
+
+      push(msgRef, payload);
+      input.value = "";
+    }
+  };
+
+  window.deleteMsg = (id) => { if(confirm("確定刪除此訊息？")) remove(ref(db, `all_messages/${id}`)); };
+
+  // 啟動程式
+  loadSettings();
+
+</script>
+</body>
+</html>
